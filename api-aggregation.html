@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>高达 C 端首屏优化 —— 接口聚合方案</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --card: #171e2e;
+    --card2: #1c2538;
+    --line: #2b3752;
+    --text: #e8edf7;
+    --muted: #93a0b8;
+    --blue: #4f8cff;
+    --green: #2fce8f;
+    --orange: #ff9f43;
+    --red: #ff6b6b;
+    --purple: #a06bff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    padding: 40px 24px 64px;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 26px; letter-spacing: 1px; margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+  h2 {
+    font-size: 17px; margin: 36px 0 18px; display: flex; align-items: center; gap: 10px;
+  }
+  h2 .tag {
+    font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 20px;
+    background: rgba(79,140,255,.15); color: var(--blue); border: 1px solid rgba(79,140,255,.4);
+  }
+  h2 .tag.red { background: rgba(255,107,107,.12); color: var(--red); border-color: rgba(255,107,107,.4); }
+  h2 .tag.green { background: rgba(47,206,143,.12); color: var(--green); border-color: rgba(47,206,143,.4); }
+  h2 .tag.purple { background: rgba(160,107,255,.12); color: var(--purple); border-color: rgba(160,107,255,.4); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 24px; overflow: hidden;
+  }
+
+  /* ---------- 链路图 ---------- */
+  .lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .lanes { grid-template-columns: 1fr; } }
+
+  .lane-title {
+    font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  .flow { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+  .node {
+    position: relative;
+    background: var(--card2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 14px; font-size: 13px; text-align: center;
+  }
+  .node b { display: block; font-size: 13px; }
+  .node small { color: var(--muted); font-size: 11.5px; }
+  .node.client { border-color: rgba(79,140,255,.5); }
+  .node.server { border-color: rgba(47,206,143,.5); }
+  .node.bad { border-color: rgba(255,107,107,.55); background: rgba(255,107,107,.07); }
+  .node.good { border-color: rgba(47,206,143,.6); background: rgba(47,206,143,.07); }
+
+  .arrow {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    height: 34px; color: var(--muted); font-size: 11px; position: relative;
+  }
+  .arrow::before {
+    content: ""; width: 2px; height: 100%;
+    background: linear-gradient(var(--line), var(--line));
+    position: absolute; left: 50%; transform: translateX(-50%);
+  }
+  .arrow::after {
+    content: ""; position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: var(--line);
+  }
+  .arrow span {
+    position: relative; z-index: 1; background: var(--card);
+    padding: 1px 10px; border-radius: 12px; border: 1px dashed var(--line);
+  }
+  .arrow.slow span { color: var(--red); border-color: rgba(255,107,107,.5); }
+  .arrow.fast span { color: var(--green); border-color: rgba(47,206,143,.5); }
+
+  .parallel {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 4px;
+  }
+  .parallel .node { font-size: 12px; padding: 8px 6px; }
+
+  .geo {
+    margin-top: 16px; font-size: 12px; color: var(--muted);
+    border-top: 1px dashed var(--line); padding-top: 12px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .geo .row { display: flex; align-items: center; gap: 8px; }
+  .pill {
+    font-size: 11px; padding: 1px 8px; border-radius: 10px; font-weight: 600;
+  }
+  .pill.red { background: rgba(255,107,107,.15); color: var(--red); }
+  .pill.green { background: rgba(47,206,143,.15); color: var(--green); }
+
+  /* ---------- js-to-groovy ---------- */
+  .pipe {
+    display: grid; grid-template-columns: 1.2fr .8fr 1fr 1.1fr; gap: 0;
+    align-items: stretch;
+  }
+  @media (max-width: 900px) { .pipe { grid-template-columns: 1fr; gap: 12px; } }
+  .stage {
+    background: var(--card2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; font-size: 12.5px; position: relative;
+  }
+  .stage h3 { font-size: 13.5px; margin-bottom: 6px; }
+  .stage p { color: var(--muted); font-size: 12px; }
+  .stage code {
+    display: block; margin-top: 8px; background: #0b0f1a; border-radius: 6px;
+    padding: 8px 10px; font-size: 11.5px; color: #9ecbff;
+    font-family: "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-all;
+  }
+  .conn {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 20px; min-height: 20px;
+  }
+  @media (max-width: 900px) { .conn { transform: rotate(90deg); height: 20px; } }
+
+  .why {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px;
+  }
+  @media (max-width: 900px) { .why { grid-template-columns: 1fr; } }
+  .why .item {
+    background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  }
+  .why .item b { font-size: 13px; display: block; margin-bottom: 4px; }
+  .why .item p { font-size: 12px; color: var(--muted); }
+
+  .ctx-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 900px) { .ctx-grid { grid-template-columns: 1fr; } }
+  .ctx {
+    background: var(--card2); border: 1px solid rgba(160,107,255,.35); border-radius: 10px; padding: 14px;
+  }
+  .ctx b { font-size: 13.5px; color: var(--purple); display: block; margin-bottom: 4px; }
+  .ctx p { font-size: 12.5px; color: var(--muted); }
+  .ctx .same { margin-top: 8px; font-size: 11.5px; color: var(--green); }
+
+  .note {
+    margin-top: 14px; font-size: 12.5px; color: var(--muted);
+    background: rgba(79,140,255,.07); border: 1px dashed rgba(79,140,255,.35);
+    border-radius: 10px; padding: 12px 14px;
+  }
+  .note b { color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>高达 C 端首屏渲染优化 · 接口聚合方案</h1>
+  <div class="sub">境外业务场景：用户在海外（如沙特），服务器在香港 —— 把组件级的多次跨境串行请求，聚合为主接口内的一次服务端内网并发调用</div>
+
+  <!-- ============ 链路对比 ============ -->
+  <h2><span class="tag red">BEFORE</span> vs <span class="tag green">AFTER</span> 渲染链路对比</h2>
+  <div class="card">
+    <div class="lanes">
+      <!-- BEFORE -->
+      <div>
+        <div class="lane-title"><span class="dot" style="background:var(--red)"></span>优化前 · 组件各自请求（N 次跨境）</div>
+        <div class="flow">
+          <div class="node client"><b>App 启动</b><small>加载前端渲染容器（WebView / RN 容器）</small></div>
+          <div class="arrow slow"><span>下载前端 JS bundle · 跨境</span></div>
+          <div class="node client"><b>高达 Core 执行</b><small>请求页面主接口</small></div>
+          <div class="arrow slow"><span>主接口请求 · 用户 → 香港</span></div>
+          <div class="node server"><b>主接口返回</b><small>各组件信息 + 组件代码下载地址</small></div>
+          <div class="arrow slow"><span>下载各组件 JS · 跨境</span></div>
+          <div class="node client"><b>组件代码执行</b><small>每个组件再各自请求自己的业务接口</small></div>
+          <div class="arrow slow"><span>N 个组件接口请求 · 全部跨境串行/并行</span></div>
+          <div class="node bad"><b>首屏渲染完成</b><small>链路长：容器 → bundle → 主接口 → 组件 bundle → N 个接口</small></div>
+        </div>
+        <div class="geo">
+          <div class="row"><span class="pill red">高延迟</span>每个请求都是 沙特用户 ⇄ 香港机房 的跨境往返，RTT 高、且发生在渲染关键路径末端</div>
+        </div>
+      </div>
+
+      <!-- AFTER -->
+      <div>
+        <div class="lane-title"><span class="dot" style="background:var(--green)"></span>优化后 · 服务端聚合（1 次跨境）</div>
+        <div class="flow">
+          <div class="node client"><b>App 启动</b><small>加载前端渲染容器</small></div>
+          <div class="arrow slow"><span>下载前端 JS bundle · 跨境</span></div>
+          <div class="node client"><b>高达 Core 执行</b><small>请求页面主接口（带上上下文 + 聚合配置）</small></div>
+          <div class="arrow slow"><span>主接口请求 · 用户 → 香港（仅 1 次）</span></div>
+          <div class="node server"><b>主接口（服务端聚合层）</b><small>执行 Groovy 脚本构造各组件请求参数</small></div>
+          <div class="arrow fast"><span>香港内网并发请求下游服务 · 低延迟</span></div>
+          <div class="parallel">
+            <div class="node server"><b>下游服务 A</b></div>
+            <div class="node server"><b>下游服务 B</b></div>
+            <div class="node server"><b>下游服务 C</b></div>
+          </div>
+          <div class="arrow fast"><span>内网返回，聚合结果</span></div>
+          <div class="node server"><b>主接口返回</b><small>组件信息 + 下载地址 + <b style="color:var(--green)">组件数据（已聚合）</b></small></div>
+          <div class="arrow slow"><span>返回 + 加载组件 · 跨境</span></div>
+          <div class="node good"><b>首屏渲染完成</b><small>组件拿到数据直接渲染，<b style="color:var(--green)">0 次额外跨境请求</b></small></div>
+        </div>
+        <div class="geo">
+          <div class="row"><span class="pill green">低延迟</span>用户侧只剩 1 次跨境主接口请求；N 个下游调用变为 香港内网 ⇄ 香港内网，服务器间 RTT 远小于跨境</div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <b>为什么在高达场景收益大？</b>普通场景下「用户→服务器」和「服务器→服务器」差别不大；但我们是境外业务 —— 用户在沙特、服务器在香港。把 N 次「沙特 ⇄ 香港」跨境请求，收敛为 1 次跨境 + N 次香港内网调用，省下的就是 (N-1) 次跨境 RTT。
+    </div>
+  </div>
+
+  <!-- ============ 关键设计 ============ -->
+  <h2><span class="tag">核心难点</span>前端如何描述请求参数给后端？— 构建时转换</h2>
+  <div class="card">
+    <p style="font-size:13px;color:var(--muted);margin-bottom:16px;">每个组件仓库内有一个固定命名的 <code style="background:#0b0f1a;padding:1px 6px;border-radius:4px;color:#9ecbff;font-family:Menlo,monospace;font-size:12px;">apiAgg.js</code>，组件构建时由 Node.js 构建服务 <b style="color:var(--text)">sailor-gundam-build-server</b> 顺便完成 JS → Groovy 编译，随构建产物一起交付：</p>
+    <div class="pipe">
+      <div class="stage">
+        <h3>① 前端书写 apiAgg.js</h3>
+        <p>组件的参数构造逻辑本来就写在前端代码里（高达后端不了解业务组件的下游参数），前端同学用熟悉的 JS 描述，放在组件仓库固定文件中</p>
+        <code>// 组件根目录 / apiAgg.js
+params: {
+  cityId: ctx.env.cityId,
+  lng: ctx.env.longitude,
+  tab: ctx.urlQuery.tab
+}</code>
+      </div>
+      <div class="conn">→</div>
+      <div class="stage">
+        <h3>② 构建时编译 · build-server</h3>
+        <p><b>sailor-gundam-build-server</b>（Node.js）构建组件、上传 CDN 的同时，调用自研 <b>js-to-groovy</b> 把 apiAgg.js 编译成 Groovy，传给高达后端与组件配置绑定存储</p>
+        <code style="color:#c9a7ff">组件 bundle → CDN
+apiAgg.js → Groovy → 高达后端
+github.com/pbgf/js-to-groovy</code>
+      </div>
+      <div class="conn">→</div>
+      <div class="stage">
+        <h3>③ 运行时执行（Groovy）</h3>
+        <p>主接口命中页面后，高达后端取出各组件绑定的 Groovy 脚本，注入同构上下文执行，得到下游请求参数，发起内网聚合调用</p>
+        <code>def params = [
+  cityId: ctx.env.cityId,
+  lng: ctx.env.longitude,
+  tab: ctx.urlQuery.tab
+]</code>
+      </div>
+    </div>
+
+    <div class="why">
+      <div class="item">
+        <b>为什么选 Groovy？</b>
+        <p>对比社区方案 JSONPath / SpEL / JEXL 等，Groovy 在<b>成熟度、性能、扩展能力</b>上综合最优 —— 表达力足以覆盖真实的参数构造逻辑（条件、循环、函数调用），而非纯取数。</p>
+      </div>
+      <div class="item">
+        <b>为什么自研 js-to-groovy？</b>
+        <p>前端直接写 Groovy 门槛高、易出错，社区没有成熟的 JS → Groovy 转换方案。自研后前端只写 JS，降低书写与维护成本。</p>
+      </div>
+      <div class="item">
+        <b>为什么是前端来写？</b>
+        <p>下游服务的参数构造逻辑属于业务组件的实现细节，代码在前端。高达后端作为通用聚合层，不感知业务逻辑，只负责执行与转发。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 上下文同构 ============ -->
+  <h2><span class="tag purple">关键保障</span>上下文同构：前后端语义一致</h2>
+  <div class="card">
+    <p style="font-size:13px;color:var(--muted);margin-bottom:16px;">同一段参数构造逻辑，前端本地执行（降级/旧链路）与后端 Groovy 执行（聚合链路）必须产出相同结果 —— 依赖三类上下文在两端保持一致：</p>
+    <div class="ctx-grid">
+      <div class="ctx">
+        <b>① 运行时环境</b>
+        <p>国家、城市、语言、经纬度等</p>
+        <div class="same">✓ 主接口请求时前端原本就会上传给后端，两端天然同源</div>
+      </div>
+      <div class="ctx">
+        <b>② URL 参数</b>
+        <p>页面 URL 上的 query 参数</p>
+        <div class="same">✓ 随主接口请求一并传递，两端取值一致</div>
+      </div>
+      <div class="ctx">
+        <b>③ 页面 & 组件配置</b>
+        <p>页面配置、组件配置信息</p>
+        <div class="same">✓ 配置本来就是高达后端下发给前端的，天然保持一致</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
